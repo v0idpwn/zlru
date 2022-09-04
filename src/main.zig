@@ -8,7 +8,7 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
     return struct {
         const Self = @This();
         pub const PutResult = struct { key: KT, value: VT };
-        const HashMapValue = struct { value : VT, node : *TQ(KT).Node};
+        const HashMapValue = struct { value: VT, node: *TQ(KT).Node };
 
         key_list: TQ(KT),
         hashmap: std.AutoHashMap(KT, HashMapValue),
@@ -33,7 +33,7 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
         }
 
         fn hashmap_value(value: VT, node: *TQ(KT).Node) HashMapValue {
-          return HashMapValue{.value = value, .node = node};
+            return HashMapValue{ .value = value, .node = node };
         }
 
         pub fn put(self: *Self, key: KT, value: VT) Allocator.Error!?PutResult {
