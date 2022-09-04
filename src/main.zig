@@ -8,16 +8,17 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
     return struct {
         const Self = @This();
         pub const PutResult = struct { key: KT, value: VT };
+        const HashMapValue = struct { value : VT, node : *TQ(KT).Node};
 
         key_list: TQ(KT),
-        hashmap: std.AutoHashMap(KT, VT),
+        hashmap: std.AutoHashMap(KT, HashMapValue),
         allocator: Allocator,
         version: i32,
         limit: u16,
         len: u16,
 
         pub fn init(allocator: Allocator, limit: u16) !Self {
-            const hashmap = std.AutoHashMap(KT, VT).init(allocator);
+            const hashmap = std.AutoHashMap(KT, HashMapValue).init(allocator);
             const list = TQ(KT){};
 
             return Self{ .key_list = list, .hashmap = hashmap, .allocator = allocator, .version = 1, .limit = limit, .len = 0 };
@@ -31,26 +32,21 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
             self.* = undefined;
         }
 
-        // If key is set in hashmap, we remove it from the linked list O(n) and
-        // prepend the key to the linked list O(1) and update the pair in the hashmap O(1).
-        //
-        // If the key is not set in the hashmap and the limit isn't yet reached, we add
-        // it to the hashmap O(1) and prepend the key to the linked list O(1)
-        //
-        // If the key is not set in the hashmap, and the limit is reached, we pop the last
-        // key from the linked list O(1) and prepend the key to the linked list O(1), and then
+        fn hashmap_value(value: VT, node: *TQ(KT).Node) HashMapValue {
+          return HashMapValue{.value = value, .node = node};
+        }
+
         pub fn put(self: *Self, key: KT, value: VT) Allocator.Error!?PutResult {
-            if (self.hashmap.get(key)) |old_value| {
-                try self.hashmap.put(key, value);
-                var node = self.find_and_remove_from_key_list(key).?;
-                self.key_list.prepend(node);
+            if (self.hashmap.get(key)) |old_hash| {
+                self.key_list.remove(old_hash.node);
+                self.key_list.prepend(old_hash.node);
+                try self.hashmap.put(key, hashmap_value(value, old_hash.node));
 
-                return PutResult{ .value = old_value, .key = key };
+                return PutResult{ .value = old_hash.value, .key = key };
             } else {
-                try self.hashmap.put(key, value);
-
                 var node = try self.to_node(key);
                 self.key_list.prepend(node);
+                try self.hashmap.put(key, hashmap_value(value, node));
 
                 if (self.len >= self.limit) {
                     var result = self.key_list.pop().?;
@@ -58,7 +54,7 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
                     const removed_key = result.*.data;
 
                     if (self.hashmap.fetchRemove(removed_key)) |rmkv| {
-                        return PutResult{ .value = rmkv.value, .key = rmkv.key };
+                        return PutResult{ .value = rmkv.value.value, .key = rmkv.key };
                     }
                 } else {
                     self.len = self.len + 1;
@@ -72,24 +68,13 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
         }
 
         pub fn get(self: *Self, key: KT) ?VT {
-            if (self.hashmap.get(key)) |value| {
-                var node = self.find_and_remove_from_key_list(key).?;
-                self.key_list.prepend(node);
-                return value;
+            if (self.hashmap.get(key)) |hash_value| {
+                self.key_list.remove(hash_value.node);
+                self.key_list.prepend(hash_value.node);
+                return hash_value.value;
             } else {
                 return null;
             }
-        }
-
-        fn find_and_remove_from_key_list(self: *Self, key: KT) ?*TQ(KT).Node {
-            var it = self.key_list.first;
-            while (it) |node| : (it = node.next) {
-                if (node.data == key) {
-                    self.key_list.remove(node);
-                    return node;
-                }
-            }
-            return null;
         }
 
         fn to_node(self: *Self, key: KT) !*TQ(KT).Node {
