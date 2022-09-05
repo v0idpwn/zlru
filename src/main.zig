@@ -77,7 +77,12 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
                 return null;
             }
         }
+
+        // Since both hashmap and the linked list usage aren't thread-safe, we need
+        // to acquire a lock before using them. FIXME.
         pub fn getLen(self: *Self) u16 {
+            self.mutex.lock();
+            defer self.mutex.unlock();
             return self.len;
         }
 
