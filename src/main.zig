@@ -3,8 +3,9 @@ const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
 const TQ = std.TailQueue;
+const M = std.Thread.Mutex;
 
-pub fn ZLRU(comptime KT: type, comptime VT: type) type {
+pub fn ZLRU(comptime KT: type, comptime VT: type, comptime MT: type) type {
     return struct {
         const Self = @This();
         pub const PutResult = struct { key: KT, value: VT };
@@ -12,20 +13,20 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
 
         key_list: TQ(KT),
         hashmap: std.AutoHashMap(KT, HashMapValue),
-        mutex: std.Thread.Mutex,
+        mutex: MT,
         allocator: Allocator,
         version: i32,
         limit: u16,
         len: u16,
 
-        pub fn init(allocator: Allocator, limit: u16) !Self {
+        pub fn init(allocator: Allocator, limit: u16, mutex: MT) !Self {
             const hashmap = std.AutoHashMap(KT, HashMapValue).init(allocator);
             const list = TQ(KT){};
 
             return Self{
                 .key_list = list,
                 .hashmap = hashmap,
-                .mutex = std.Thread.Mutex{},
+                .mutex = mutex,
                 .allocator = allocator,
                 .version = 1,
                 .limit = limit,
@@ -38,6 +39,11 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
             while (self.key_list.pop()) |node| {
                 self.allocator.destroy(node);
             }
+
+            if (@hasDecl(@TypeOf(self.mutex), "deinit")) {
+                self.mutex.deinit();
+            }
+
             self.* = undefined;
         }
 
@@ -116,12 +122,12 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
 }
 
 test "initializing and deinitializing doesn't leak" {
-    var zlru = try ZLRU(i32, i32).init(testing.allocator, 256);
+    var zlru = try ZLRU(i32, i32, M).init(testing.allocator, 256, M{});
     defer zlru.deinit();
 }
 
 test "put/get behaves as hashmap" {
-    var zlru = try ZLRU(i32, i32).init(testing.allocator, 256);
+    var zlru = try ZLRU(i32, i32, M).init(testing.allocator, 256, M{});
     defer zlru.deinit();
 
     _ = try zlru.put(10, 20);
@@ -137,7 +143,7 @@ test "put/get behaves as hashmap" {
 }
 
 test "put increases len for inserts but not for updates" {
-    var zlru = try ZLRU(i32, i32).init(testing.allocator, 256);
+    var zlru = try ZLRU(i32, i32, M).init(testing.allocator, 256, M{});
     defer zlru.deinit();
 
     try testing.expect(zlru.getLen() == 0);
@@ -153,7 +159,7 @@ test "put increases len for inserts but not for updates" {
 }
 
 test "eviction" {
-    var zlru = try ZLRU(i32, i32).init(testing.allocator, 2);
+    var zlru = try ZLRU(i32, i32, M).init(testing.allocator, 2, M{});
     defer zlru.deinit();
 
     // Filling data
@@ -187,7 +193,7 @@ test "eviction" {
 }
 
 test "reading affects eviction" {
-    var zlru = try ZLRU(i32, i32).init(testing.allocator, 5);
+    var zlru = try ZLRU(i32, i32, M).init(testing.allocator, 5, M{});
     defer zlru.deinit();
 
     _ = try zlru.put(1, 0);
@@ -207,7 +213,7 @@ test "reading affects eviction" {
 // Though we can't (easily) assert that it is working properly, we can
 // assert that no memory leaks or sefaults happen on multithreaded stress
 test "multithreaded usage proptest" {
-    var zlru = try ZLRU(i32, i32).init(testing.allocator, 256);
+    var zlru = try ZLRU(i32, i32, M).init(testing.allocator, 256, M{});
     defer zlru.deinit();
 
     const thread0 = try std.Thread.spawn(.{}, propTest, .{ &zlru, 0 });
@@ -221,7 +227,7 @@ test "multithreaded usage proptest" {
     thread0.join();
 }
 
-fn propTest(zlru: *ZLRU(i32, i32), n: i32) !void {
+fn propTest(zlru: *ZLRU(i32, i32, M), n: i32) !void {
     var i: i32 = 0;
     var x: i32 = 1000 * n;
 
