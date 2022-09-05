@@ -12,6 +12,7 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
 
         key_list: TQ(KT),
         hashmap: std.AutoHashMap(KT, HashMapValue),
+        mutex: std.Thread.Mutex,
         allocator: Allocator,
         version: i32,
         limit: u16,
@@ -21,7 +22,7 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
             const hashmap = std.AutoHashMap(KT, HashMapValue).init(allocator);
             const list = TQ(KT){};
 
-            return Self{ .key_list = list, .hashmap = hashmap, .allocator = allocator, .version = 1, .limit = limit, .len = 0 };
+            return Self{ .key_list = list, .hashmap = hashmap, .mutex = std.Thread.Mutex{}, .allocator = allocator, .version = 1, .limit = limit, .len = 0 };
         }
 
         pub fn deinit(self: *Self) void {
@@ -32,11 +33,11 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
             self.* = undefined;
         }
 
-        fn hashmap_value(value: VT, node: *TQ(KT).Node) HashMapValue {
-            return HashMapValue{ .value = value, .node = node };
-        }
-
+        // Since both hashmap and the linked list usage aren't thread-safe, we need
+        // to acquire a lock before using them. FIXME.
         pub fn put(self: *Self, key: KT, value: VT) Allocator.Error!?PutResult {
+            self.mutex.lock();
+            defer self.mutex.unlock();
             if (self.hashmap.get(key)) |old_hash| {
                 self.key_list.remove(old_hash.node);
                 self.key_list.prepend(old_hash.node);
@@ -44,7 +45,7 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
 
                 return PutResult{ .value = old_hash.value, .key = key };
             } else {
-                var node = try self.to_node(key);
+                var node = try self.alloc_as_node(key);
                 self.key_list.prepend(node);
                 try self.hashmap.put(key, hashmap_value(value, node));
 
@@ -63,11 +64,11 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
             return null;
         }
 
-        pub fn getLen(self: *Self) u16 {
-            return self.len;
-        }
-
+        // Since both hashmap and the linked list usage aren't thread-safe, we need
+        // to acquire a lock before using them. FIXME.
         pub fn get(self: *Self, key: KT) ?VT {
+            self.mutex.lock();
+            defer self.mutex.unlock();
             if (self.hashmap.get(key)) |hash_value| {
                 self.key_list.remove(hash_value.node);
                 self.key_list.prepend(hash_value.node);
@@ -76,8 +77,20 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
                 return null;
             }
         }
+        pub fn getLen(self: *Self) u16 {
+            return self.len;
+        }
 
-        fn to_node(self: *Self, key: KT) !*TQ(KT).Node {
+        // Conditionally compile?
+        pub fn getKeyList(self: *Self) TQ(KT) {
+            return self.key_list;
+        }
+
+        fn hashmap_value(value: VT, node: *TQ(KT).Node) HashMapValue {
+            return HashMapValue{ .value = value, .node = node };
+        }
+
+        fn alloc_as_node(self: *Self, key: KT) !*TQ(KT).Node {
             var node = try self.allocator.create(TQ(KT).Node);
             node.data = key;
 
@@ -142,6 +155,7 @@ test "eviction" {
     try testing.expect(put_result.?.value == 10);
 
     try testing.expect(zlru.getLen() == 2);
+    try testing.expect(zlru.getKeyList().len == 2);
 
     try testing.expect(zlru.get(1) == null);
     try testing.expect(zlru.get(2).? == 20);
@@ -172,4 +186,32 @@ test "reading affects eviction" {
     var put_result = try zlru.put(6, 0);
     try testing.expect(put_result.?.key == 3);
     try testing.expect(put_result.?.value == 0);
+}
+
+// Though we can't (easily) assert that it is working properly, we can
+// assert that no memory leaks or sefaults happen on multithreaded stress
+test "multithreaded usage proptest" {
+    var zlru = try ZLRU(i32, i32).init(testing.allocator, 256);
+    defer zlru.deinit();
+
+    const thread0 = try std.Thread.spawn(.{}, propTest, .{ &zlru, 0 });
+    const thread1 = try std.Thread.spawn(.{}, propTest, .{ &zlru, 1 });
+    const thread2 = try std.Thread.spawn(.{}, propTest, .{ &zlru, 2 });
+    const thread3 = try std.Thread.spawn(.{}, propTest, .{ &zlru, 3 });
+
+    thread3.join();
+    thread2.join();
+    thread1.join();
+    thread0.join();
+}
+
+fn propTest(zlru: *ZLRU(i32, i32), n: i32) !void {
+    var i: i32 = 0;
+    var x: i32 = 1000 * n;
+
+    while (i < 1000) {
+        _ = try zlru.put(i + x, n);
+        _ = zlru.get(i + x);
+        i += 1;
+    }
 }
