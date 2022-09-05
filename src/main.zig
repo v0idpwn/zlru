@@ -22,7 +22,15 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
             const hashmap = std.AutoHashMap(KT, HashMapValue).init(allocator);
             const list = TQ(KT){};
 
-            return Self{ .key_list = list, .hashmap = hashmap, .mutex = std.Thread.Mutex{}, .allocator = allocator, .version = 1, .limit = limit, .len = 0 };
+            return Self{
+                .key_list = list,
+                .hashmap = hashmap,
+                .mutex = std.Thread.Mutex{},
+                .allocator = allocator,
+                .version = 1,
+                .limit = limit,
+                .len = 0,
+            };
         }
 
         pub fn deinit(self: *Self) void {
@@ -55,7 +63,10 @@ pub fn ZLRU(comptime KT: type, comptime VT: type) type {
                     const removed_key = result.*.data;
 
                     if (self.hashmap.fetchRemove(removed_key)) |rmkv| {
-                        return PutResult{ .value = rmkv.value.value, .key = rmkv.key };
+                        return PutResult{
+                            .value = rmkv.value.value,
+                            .key = rmkv.key,
+                        };
                     }
                 } else {
                     self.len = self.len + 1;
