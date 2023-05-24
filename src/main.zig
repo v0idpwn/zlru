@@ -40,10 +40,6 @@ pub fn ZLRU(comptime KT: type, comptime VT: type, comptime MT: type) type {
                 self.allocator.destroy(node);
             }
 
-            if (@hasDecl(@TypeOf(self.mutex), "deinit")) {
-                self.mutex.deinit();
-            }
-
             self.* = undefined;
         }
 
